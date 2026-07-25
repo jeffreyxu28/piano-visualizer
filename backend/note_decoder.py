@@ -1,0 +1,189 @@
+"""Turn model onset/frame probabilities into discrete note events.
+
+Ported from the training notebook's inference cell: sliding-window
+prediction over long spectrograms (with overlap-averaging), then a
+stateful per-key decoder that converts onset/frame probability curves
+into (pitch, start, end) note events.
+"""
+
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+import numpy as np
+import pretty_midi
+import torch
+
+from backend.config import (
+    CHUNK_SECONDS,
+    FRAME_ONLY_START_THRESHOLD,
+    FRAME_THRESHOLD,
+    HOP_LENGTH,
+    MIN_MIDI,
+    MIN_START_FRAME_PROB,
+    N_KEYS,
+    OFF_FRAMES_REQUIRED,
+    ONSET_THRESHOLD,
+    SAMPLE_RATE,
+    WINDOW_OVERLAP_SECONDS,
+)
+from backend.model import PianoTranscriptionModel
+
+
+@torch.no_grad()
+def predict_probabilities(
+    model: PianoTranscriptionModel,
+    mel: np.ndarray,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run the model over long audio using overlapping windows, averaging
+    predictions in the overlap regions so chunk boundaries stay smooth.
+    """
+    total_frames = len(mel)
+    window_frames = int(CHUNK_SECONDS * SAMPLE_RATE / HOP_LENGTH) + 1
+    overlap_frames = max(1, int(WINDOW_OVERLAP_SECONDS * SAMPLE_RATE / HOP_LENGTH))
+    stride = max(1, window_frames - overlap_frames)
+
+    onset_sum = np.zeros((total_frames, N_KEYS), dtype=np.float32)
+    frame_sum = np.zeros((total_frames, N_KEYS), dtype=np.float32)
+    counts = np.zeros((total_frames, 1), dtype=np.float32)
+
+    for start in range(0, total_frames, stride):
+        end = min(total_frames, start + window_frames)
+        chunk = torch.from_numpy(mel[start:end]).unsqueeze(0).to(device)
+
+        onset_logits, frame_logits = model(chunk)
+        onset_probability = torch.sigmoid(onset_logits)[0].cpu().numpy()
+        frame_probability = torch.sigmoid(frame_logits)[0].cpu().numpy()
+
+        onset_sum[start:end] += onset_probability
+        frame_sum[start:end] += frame_probability
+        counts[start:end] += 1.0
+
+        if end == total_frames:
+            break
+
+    counts = np.maximum(counts, 1.0)
+    return onset_sum / counts, frame_sum / counts
+
+
+def make_note(pitch: int, start_frame: int, end_frame: int, onset_confidence: float) -> dict:
+    seconds_per_frame = HOP_LENGTH / SAMPLE_RATE
+    start_sec = start_frame * seconds_per_frame
+    end_sec = max(start_sec + seconds_per_frame, end_frame * seconds_per_frame)
+
+    return {
+        "midi_note": pitch,
+        "note_name": pretty_midi.note_number_to_name(pitch),
+        "start_sec": round(float(start_sec), 4),
+        "end_sec": round(float(end_sec), 4),
+        "duration_sec": round(float(end_sec - start_sec), 4),
+        "onset_confidence": round(float(onset_confidence), 4),
+    }
+
+
+def decode_notes(
+    onset_probability: np.ndarray,
+    frame_probability: np.ndarray,
+) -> list[dict]:
+    notes: list[dict] = []
+
+    onset_binary = onset_probability >= ONSET_THRESHOLD
+    onset_events = onset_binary.copy()
+    if len(onset_events) > 1:
+        onset_events[1:] = onset_binary[1:] & ~onset_binary[:-1]
+
+    for key_index in range(N_KEYS):
+        pitch = MIN_MIDI + key_index
+        active = False
+        start_frame = 0
+        start_confidence = 0.0
+        off_count = 0
+        previous_frame_active = False
+
+        for t in range(len(frame_probability)):
+            onset_now = bool(onset_events[t, key_index])
+            frame_prob = float(frame_probability[t, key_index])
+            frame_now = frame_prob >= FRAME_THRESHOLD
+
+            frame_started = frame_now and not previous_frame_active
+            should_start = (onset_now and frame_prob >= MIN_START_FRAME_PROB) or (
+                frame_started and frame_prob >= FRAME_ONLY_START_THRESHOLD
+            )
+
+            if not active:
+                if should_start:
+                    active = True
+                    start_frame = t
+                    start_confidence = float(onset_probability[t, key_index])
+                    off_count = 0
+                previous_frame_active = frame_now
+                continue
+
+            if onset_now and t > start_frame + 1:
+                notes.append(make_note(pitch, start_frame, t, start_confidence))
+                start_frame = t
+                start_confidence = float(onset_probability[t, key_index])
+                off_count = 0
+                previous_frame_active = frame_now
+                continue
+
+            if frame_now:
+                off_count = 0
+            else:
+                off_count += 1
+                if off_count >= OFF_FRAMES_REQUIRED:
+                    end_frame = max(start_frame + 1, t - OFF_FRAMES_REQUIRED + 1)
+                    notes.append(make_note(pitch, start_frame, end_frame, start_confidence))
+                    active = False
+                    off_count = 0
+
+            previous_frame_active = frame_now
+
+        if active:
+            notes.append(
+                make_note(
+                    pitch,
+                    start_frame,
+                    max(start_frame + 1, len(frame_probability) - 1),
+                    start_confidence,
+                )
+            )
+
+    notes.sort(key=lambda note: float(note["start_sec"]))
+    return notes
+
+
+def save_midi(notes: list[dict], output_path: Path) -> None:
+    midi = pretty_midi.PrettyMIDI()
+    piano = pretty_midi.Instrument(program=0, name="Piano")
+
+    for note in notes:
+        piano.notes.append(
+            pretty_midi.Note(
+                velocity=max(1, min(127, int(round(80 * note["onset_confidence"] + 20)))),
+                pitch=int(note["midi_note"]),
+                start=float(note["start_sec"]),
+                end=float(note["end_sec"]),
+            )
+        )
+
+    midi.instruments.append(piano)
+    midi.write(str(output_path))
+
+
+def save_csv(notes: list[dict], output_path: Path) -> None:
+    fieldnames = [
+        "midi_note",
+        "note_name",
+        "start_sec",
+        "end_sec",
+        "duration_sec",
+        "onset_confidence",
+    ]
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for note in notes:
+            writer.writerow(note)

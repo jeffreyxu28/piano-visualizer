@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Runtime-generated per-upload artifacts
+uploads/*
+outputs/*
+!uploads/.gitkeep
+!outputs/.gitkeep
+
+# Training run data/logs - large and reproducible, not meant to be committed
+training/maestro_data/
+training/train_log.txt
+training/train_log_attempt1_crashed.txt
+training/app_server_log.txt
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
