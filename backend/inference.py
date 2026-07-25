@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from backend.audio import AudioError, load_audio_mono_16k, waveform_to_log_mel
+from backend.audio import AudioError, load_audio_mono_16k
 from backend.config import CHECKPOINT_PATH, SAMPLE_RATE
 from backend.model import PianoTranscriptionModel
 from backend.note_decoder import decode_notes, predict_probabilities, save_csv, save_midi
@@ -89,8 +89,7 @@ def transcribe_audio_file(
     duration_seconds = len(waveform) / SAMPLE_RATE
 
     try:
-        log_mel = waveform_to_log_mel(waveform)
-        onset_probability, frame_probability = predict_probabilities(model, log_mel, device)
+        onset_probability, frame_probability = predict_probabilities(model, waveform, device)
         notes = decode_notes(onset_probability, frame_probability)
     except Exception as exc:
         raise TranscriptionError(f"Transcription failed: {exc}") from exc

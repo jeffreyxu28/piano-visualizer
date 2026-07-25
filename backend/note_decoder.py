@@ -15,6 +15,7 @@ import numpy as np
 import pretty_midi
 import torch
 
+from backend.audio import waveform_to_log_mel
 from backend.config import (
     CHUNK_SECONDS,
     FRAME_ONLY_START_THRESHOLD,
@@ -34,13 +35,20 @@ from backend.model import PianoTranscriptionModel
 @torch.no_grad()
 def predict_probabilities(
     model: PianoTranscriptionModel,
-    mel: np.ndarray,
+    waveform: np.ndarray,
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run the model over long audio using overlapping windows, averaging
     predictions in the overlap regions so chunk boundaries stay smooth.
+
+    The log-mel spectrogram is computed one ~10s window at a time (matching
+    the model's own chunking) rather than for the whole file up front. For
+    a long recording, one big STFT over the entire signal is the single
+    largest memory allocation in the whole pipeline; computing it window by
+    window keeps peak memory bounded to a single window's spectrogram
+    instead of scaling with the song's length.
     """
-    total_frames = len(mel)
+    total_frames = 1 + len(waveform) // HOP_LENGTH
     window_frames = int(CHUNK_SECONDS * SAMPLE_RATE / HOP_LENGTH) + 1
     overlap_frames = max(1, int(WINDOW_OVERLAP_SECONDS * SAMPLE_RATE / HOP_LENGTH))
     stride = max(1, window_frames - overlap_frames)
@@ -51,17 +59,29 @@ def predict_probabilities(
 
     for start in range(0, total_frames, stride):
         end = min(total_frames, start + window_frames)
-        chunk = torch.from_numpy(mel[start:end]).unsqueeze(0).to(device)
+        needed_frames = end - start
 
-        onset_logits, frame_logits = model(chunk)
+        start_sample = start * HOP_LENGTH
+        end_sample = min(len(waveform), start_sample + needed_frames * HOP_LENGTH)
+        chunk_waveform = waveform[start_sample:end_sample]
+        if len(chunk_waveform) == 0:
+            break
+
+        chunk_mel = waveform_to_log_mel(chunk_waveform)[:needed_frames]
+        actual_end = start + len(chunk_mel)
+        if len(chunk_mel) == 0:
+            break
+
+        chunk_tensor = torch.from_numpy(chunk_mel).unsqueeze(0).to(device)
+        onset_logits, frame_logits = model(chunk_tensor)
         onset_probability = torch.sigmoid(onset_logits)[0].cpu().numpy()
         frame_probability = torch.sigmoid(frame_logits)[0].cpu().numpy()
 
-        onset_sum[start:end] += onset_probability
-        frame_sum[start:end] += frame_probability
-        counts[start:end] += 1.0
+        onset_sum[start:actual_end] += onset_probability
+        frame_sum[start:actual_end] += frame_probability
+        counts[start:actual_end] += 1.0
 
-        if end == total_frames:
+        if end >= total_frames:
             break
 
     counts = np.maximum(counts, 1.0)
