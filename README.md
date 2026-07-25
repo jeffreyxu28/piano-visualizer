@@ -1,8 +1,20 @@
-# Falling Notes — Piano Transcription Visualizer
+# Song Visualizer — Piano Transcription Visualizer
 
-Upload solo-piano audio, run it through your trained CNN + BiLSTM
-transcription model, and watch a synchronized falling-note visualization
-over an 88-key keyboard while the **original** uploaded audio plays back.
+Upload solo-piano audio (or record live), run it through a trained CNN +
+BiLSTM transcription model, and watch a synchronized falling-note
+visualization over an 88-key keyboard while the **original** audio plays
+back.
+
+## Live demo
+
+**https://song-visualizer.onrender.com**
+
+Hosted on Render's free tier, so two things to expect: it spins down after
+15 minutes with no traffic, and the *first* request after that can take
+1-2 minutes (server cold start + model load) before it responds - after
+that it's fast (a few seconds per transcription). Uploads on the demo are
+capped at 20 MB / 3 minutes to fit the free tier's limited RAM; run it
+locally (below) for the full 100 MB / 20 minute limits.
 
 ## Setup
 
