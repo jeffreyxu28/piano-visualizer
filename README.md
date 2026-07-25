@@ -9,12 +9,18 @@ back.
 
 **https://song-visualizer.onrender.com**
 
-Hosted on Render's free tier, so two things to expect: it spins down after
-15 minutes with no traffic, and the *first* request after that can take
-1-2 minutes (server cold start + model load) before it responds - after
-that it's fast (a few seconds per transcription). Uploads on the demo are
-capped at 20 MB / 3 minutes to fit the free tier's limited RAM; run it
-locally (below) for the full 100 MB / 20 minute limits.
+Hosted on Render's free tier (512 MB RAM, 0.1 shared CPU), so a few things
+to expect:
+
+- It spins down after 15 minutes with no traffic, and the *first* request
+  after that takes 1-2 minutes (server cold start + model load).
+- A short clip (well under a minute) transcribes in a few seconds once
+  warm. Longer songs take proportionally longer - the CPU is the
+  bottleneck, not correctness - budget several minutes for a full-length
+  song rather than expecting instant results.
+- Uploads on the demo are capped at ~38 MB / 5 minutes (tested directly to
+  confirm it doesn't crash the instance). Run it locally (below) for the
+  full 100 MB / 20 minute limits and much faster processing.
 
 ## Setup
 
