@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: song-visualizer
+    runtime: python
+    plan: free
+    buildCommand: >-
+      pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu &&
+      pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MAX_AUDIO_SECONDS
+        value: "180"
+      - key: MAX_UPLOAD_BYTES
+        value: "20971520"
