@@ -9,6 +9,6 @@ services:
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: MAX_AUDIO_SECONDS
-        value: "180"
+        value: "480"
       - key: MAX_UPLOAD_BYTES
-        value: "20971520"
+        value: "62914560"
