@@ -7,12 +7,19 @@
 // free: the same (notes, currentTime) pair always produces the same frame.
 
 import { MIN_MIDI, MAX_MIDI, computeKeyboardLayout, noteName } from "./piano-layout.js";
-import { getImpactParticles, getImpactGlow } from "./particles.js";
+import {
+  getImpactParticles,
+  getImpactGlow,
+  getImpactShockwave,
+  getImpactFlash,
+} from "./particles.js?v=2";
 
 const TOP_MARGIN = 18;
 const MIN_KEYBOARD_HEIGHT = 108;
 const MAX_KEYBOARD_HEIGHT = 168;
-const PAST_NOTE_BUFFER = 0.08; // keep drawing briefly after a note ends for a soft fade
+const PAST_NOTE_BUFFER = 0.16; // keep drawing briefly after a note ends for the release fade
+const KEY_ATTACK_SEC = 0.045; // quick ramp-in when a note starts
+const KEY_DECAY_SEC = 0.16; // gentle fade-out after a note ends, like damper decay
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -128,24 +135,37 @@ export class Visualizer {
     const pixelsPerSecond = this.fallAreaHeight / lookahead;
 
     const visibleNotes = [];
-    const activeMidiSet = new Set();
+    const keyIntensities = new Map(); // midi -> 0..1, smooth attack/decay envelope
     for (const note of this.notes) {
       const timeUntilStart = note.start_sec - currentTime;
       const timeSinceEnd = currentTime - note.end_sec;
       if (timeUntilStart > lookahead) continue;
       if (timeSinceEnd > PAST_NOTE_BUFFER) continue;
       visibleNotes.push(note);
-      if (note.start_sec <= currentTime && currentTime < note.end_sec) {
-        activeMidiSet.add(note.midi_note);
+
+      const intensity = this._noteIntensity(note, currentTime);
+      if (intensity > (keyIntensities.get(note.midi_note) || 0)) {
+        keyIntensities.set(note.midi_note, intensity);
       }
     }
 
     this._drawFallingNotes(ctx, visibleNotes, currentTime, pixelsPerSecond);
-    this._drawKeyboard(ctx, activeMidiSet, currentTime);
+    this._drawKeyboard(ctx, keyIntensities, currentTime);
 
     if (this.options.effectsEnabled) {
       this._drawImpactEffects(ctx, visibleNotes, currentTime);
     }
+  }
+
+  // Smooth 0..1 envelope for how "lit" a note/key should look right now:
+  // a quick attack ramp on note-on, held at full while sounding, and a
+  // short decay tail after note-off instead of an instant on/off snap.
+  _noteIntensity(note, currentTime) {
+    if (currentTime < note.start_sec) return 0;
+    if (currentTime < note.end_sec) {
+      return clamp((currentTime - note.start_sec) / KEY_ATTACK_SEC, 0, 1);
+    }
+    return clamp(1 - (currentTime - note.end_sec) / KEY_DECAY_SEC, 0, 1);
   }
 
   _drawBackground(ctx, width, height) {
@@ -202,13 +222,13 @@ export class Visualizer {
       const tileWidth = pos.width * widthRatio;
       const x = pos.centerX - tileWidth / 2;
 
-      const isActive = note.start_sec <= currentTime && currentTime < note.end_sec;
+      const intensity = this._noteIntensity(note, currentTime);
       const color = this._tileColor(note);
 
       ctx.save();
       if (options.effectsEnabled) {
-        ctx.shadowColor = color.glow + (isActive ? "0.85)" : "0.45)");
-        ctx.shadowBlur = isActive ? 22 : 12;
+        ctx.shadowColor = color.glow + (0.45 + intensity * 0.4).toFixed(2) + ")";
+        ctx.shadowBlur = 12 + intensity * 10;
       }
 
       const grad = ctx.createLinearGradient(0, topY, 0, bottomY);
@@ -263,7 +283,7 @@ export class Visualizer {
     ctx.closePath();
   }
 
-  _drawKeyboard(ctx, activeMidiSet, currentTime) {
+  _drawKeyboard(ctx, keyIntensities, currentTime) {
     const { layout, keyboardTopY, height } = this;
     const keyboardHeight = height - keyboardTopY;
 
@@ -271,17 +291,17 @@ export class Visualizer {
     for (let midi = MIN_MIDI; midi <= MAX_MIDI; midi++) {
       const pos = layout.positions.get(midi);
       if (pos.isBlack) continue;
-      this._drawKey(ctx, midi, pos, keyboardTopY, keyboardHeight, activeMidiSet.has(midi), false);
+      this._drawKey(ctx, midi, pos, keyboardTopY, keyboardHeight, keyIntensities.get(midi) || 0, false);
     }
     // Black keys on top.
     for (let midi = MIN_MIDI; midi <= MAX_MIDI; midi++) {
       const pos = layout.positions.get(midi);
       if (!pos.isBlack) continue;
-      this._drawKey(ctx, midi, pos, keyboardTopY, layout.blackKeyHeight, activeMidiSet.has(midi), true);
+      this._drawKey(ctx, midi, pos, keyboardTopY, layout.blackKeyHeight, keyIntensities.get(midi) || 0, true);
     }
   }
 
-  _drawKey(ctx, midi, pos, topY, keyHeight, isActive, isBlack) {
+  _drawKey(ctx, midi, pos, topY, keyHeight, intensity, isBlack) {
     const gap = 1.5;
     const x = pos.x + gap / 2;
     const w = pos.width - gap;
@@ -299,33 +319,39 @@ export class Visualizer {
       ctx.clip();
     }
 
-    if (isActive) {
+    // Base (unlit) key is always drawn first, then the lit appearance is
+    // crossfaded on top via globalAlpha = intensity. That gives a smooth
+    // attack/decay blend between the two states for free, instead of a
+    // hard on/off snap.
+    const baseGrad = ctx.createLinearGradient(0, topY, 0, topY + keyHeight);
+    if (isBlack) {
+      baseGrad.addColorStop(0, "#2b2d38");
+      baseGrad.addColorStop(0.85, "#151620");
+      baseGrad.addColorStop(1, "#0d0e14");
+    } else {
+      baseGrad.addColorStop(0, "#ffffff");
+      baseGrad.addColorStop(0.92, "#f2f3f8");
+      baseGrad.addColorStop(1, "#d8dae4");
+    }
+    ctx.fillStyle = baseGrad;
+    this._roundRectBottom(ctx, x, topY, w, keyHeight, radius);
+    ctx.fill();
+
+    if (intensity > 0.002) {
+      ctx.save();
+      ctx.globalAlpha = intensity;
       const hue = this.options.colorByPitch ? pitchHue(midi) : this.options.customColorHue;
-      const glowColor = `hsla(${hue}, 95%, 65%, 0.9)`;
       if (this.options.effectsEnabled) {
-        ctx.shadowColor = glowColor;
+        ctx.shadowColor = `hsla(${hue}, 95%, 65%, 0.9)`;
         ctx.shadowBlur = isBlack ? 10 : 22;
       }
-      const grad = ctx.createLinearGradient(0, topY, 0, topY + keyHeight);
-      grad.addColorStop(0, `hsl(${hue} 95% 70%)`);
-      grad.addColorStop(1, isBlack ? `hsl(${hue} 70% 35%)` : `hsl(${hue} 85% 82%)`);
-      ctx.fillStyle = grad;
+      const litGrad = ctx.createLinearGradient(0, topY, 0, topY + keyHeight);
+      litGrad.addColorStop(0, `hsl(${hue} 95% 70%)`);
+      litGrad.addColorStop(1, isBlack ? `hsl(${hue} 70% 35%)` : `hsl(${hue} 85% 82%)`);
+      ctx.fillStyle = litGrad;
       this._roundRectBottom(ctx, x, topY, w, keyHeight, radius);
       ctx.fill();
-    } else {
-      const grad = ctx.createLinearGradient(0, topY, 0, topY + keyHeight);
-      if (isBlack) {
-        grad.addColorStop(0, "#2b2d38");
-        grad.addColorStop(0.85, "#151620");
-        grad.addColorStop(1, "#0d0e14");
-      } else {
-        grad.addColorStop(0, "#ffffff");
-        grad.addColorStop(0.92, "#f2f3f8");
-        grad.addColorStop(1, "#d8dae4");
-      }
-      ctx.fillStyle = grad;
-      this._roundRectBottom(ctx, x, topY, w, keyHeight, radius);
-      ctx.fill();
+      ctx.restore();
     }
 
     ctx.shadowBlur = 0;
@@ -348,14 +374,18 @@ export class Visualizer {
       this._roundRectBottom(ctx, x + 0.5, topY, w - 1, keyHeight - 0.5, radius);
       ctx.stroke();
 
-      // A slim brighter strip at the front edge of the key for definition.
-      if (!isActive) {
+      // A slim brighter strip at the front edge of the key for definition,
+      // fading out smoothly as the key lights up rather than snapping off.
+      if (intensity < 0.998) {
+        ctx.save();
+        ctx.globalAlpha = 1 - intensity;
         const frontGrad = ctx.createLinearGradient(0, topY + keyHeight - 10, 0, topY + keyHeight - 2);
         frontGrad.addColorStop(0, "rgba(255,255,255,0)");
         frontGrad.addColorStop(1, "rgba(255,255,255,0.55)");
         ctx.fillStyle = frontGrad;
         this._roundRectBottom(ctx, x + 1, topY + keyHeight - 10, w - 2, 9, radius);
         ctx.fill();
+        ctx.restore();
       }
     }
 
@@ -368,16 +398,18 @@ export class Visualizer {
       if (!pos) continue;
 
       const age = currentTime - note.start_sec;
+      const hue = this.options.colorByPitch ? pitchHue(note.midi_note) : this.options.customColorHue;
+
+      // Soft ambient bloom - the slowest-fading, widest-reaching layer.
       const glow = getImpactGlow(age);
       if (glow > 0) {
         ctx.save();
-        const radius = 34 * (1 + (1 - glow) * 0.6);
+        const radius = 36 * (1 + (1 - glow) * 0.7);
         const g = ctx.createRadialGradient(
           pos.centerX, this.keyboardTopY, 0,
           pos.centerX, this.keyboardTopY, radius
         );
-        const hue = this.options.colorByPitch ? pitchHue(note.midi_note) : this.options.customColorHue;
-        g.addColorStop(0, `hsla(${hue}, 100%, 75%, ${0.5 * glow})`);
+        g.addColorStop(0, `hsla(${hue}, 100%, 78%, ${0.5 * glow})`);
         g.addColorStop(1, `hsla(${hue}, 100%, 60%, 0)`);
         ctx.fillStyle = g;
         ctx.beginPath();
@@ -386,14 +418,52 @@ export class Visualizer {
         ctx.restore();
       }
 
+      // Near-instant white-hot flash right at the moment of contact.
+      const flash = getImpactFlash(age);
+      if (flash > 0) {
+        ctx.save();
+        const radius = 15 + flash * 12;
+        const g = ctx.createRadialGradient(
+          pos.centerX, this.keyboardTopY, 0,
+          pos.centerX, this.keyboardTopY, radius
+        );
+        g.addColorStop(0, `rgba(255,255,255,${0.85 * flash})`);
+        g.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(pos.centerX, this.keyboardTopY, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // A thin ring that snaps outward along the keybed, squashed flat to
+      // read as spreading across the surface rather than a floating circle.
+      const shockwave = getImpactShockwave(age);
+      if (shockwave) {
+        ctx.save();
+        ctx.strokeStyle = `hsla(${hue}, 100%, 84%, ${shockwave.alpha})`;
+        ctx.lineWidth = shockwave.lineWidth;
+        ctx.beginPath();
+        ctx.ellipse(
+          pos.centerX, this.keyboardTopY,
+          shockwave.radius, shockwave.radius * 0.32,
+          0, 0, Math.PI * 2
+        );
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Fizzling embers: white-hot on launch, cooling to the note's own
+      // color as they fade - the "fizzle" shower on impact.
       const particles = getImpactParticles(note.midi_note, note.start_sec, pos.centerX, this.keyboardTopY, age);
       if (particles.length) {
         ctx.save();
-        const hue = this.options.colorByPitch ? pitchHue(note.midi_note) : this.options.customColorHue;
         for (const p of particles) {
-          ctx.fillStyle = `hsla(${hue}, 95%, 75%, ${p.alpha})`;
+          const lightness = 65 + p.heat * 30;
+          const saturation = 90 - p.heat * 45;
+          ctx.fillStyle = `hsla(${hue}, ${saturation}%, ${lightness}%, ${p.alpha})`;
           ctx.beginPath();
-          ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, Math.max(0.4, p.radius), 0, Math.PI * 2);
           ctx.fill();
         }
         ctx.restore();

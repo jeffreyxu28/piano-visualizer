@@ -1,4 +1,4 @@
-import { Visualizer } from "./js/visualizer.js?v=3";
+import { Visualizer } from "./js/visualizer.js?v=4";
 import { Player } from "./js/player.js?v=3";
 import { transcribeFile } from "./js/upload.js?v=3";
 import { Recorder, isRecordingSupported } from "./js/recorder.js";
