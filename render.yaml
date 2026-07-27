@@ -9,9 +9,9 @@ services:
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: MAX_AUDIO_SECONDS
-        value: "420"
+        value: "600"
       - key: MAX_UPLOAD_BYTES
-        value: "56000000"
+        value: "80000000"
       - key: INFERENCE_GC_INTERVAL
         value: "6"
       - key: TORCH_NUM_THREADS
