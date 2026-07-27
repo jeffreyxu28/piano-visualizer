@@ -18,9 +18,13 @@ to expect:
   warm. Longer songs take proportionally longer - the CPU is the
   bottleneck, not correctness - budget several minutes for a full-length
   song rather than expecting instant results.
-- Uploads on the demo are capped at ~38 MB / 5 minutes (tested directly to
-  confirm it doesn't crash the instance). Run it locally (below) for the
-  full 100 MB / 20 minute limits and much faster processing.
+- Uploads on the demo are capped at ~52 MB / 6.5 minutes (tested directly
+  to confirm it doesn't crash the instance - PyTorch is pinned to 2
+  threads and the inference loop drops references + forces garbage
+  collection periodically, since a fractional CPU share gets no benefit
+  from more threads and the memory savings matter more than the modest
+  speed cost). Run it locally (below) for the full 100 MB / 20 minute
+  limits and much faster processing.
 
 ## Setup
 

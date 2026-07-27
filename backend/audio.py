@@ -59,7 +59,7 @@ def load_audio_mono_16k(path: Path) -> np.ndarray:
         minutes = MAX_AUDIO_SECONDS / 60
         raise AudioError(
             f"This file is too long ({probed / 60:.1f} min). "
-            f"The maximum supported length is {minutes:.0f} minutes."
+            f"The maximum supported length is {minutes:.1f} minutes."
         )
 
     try:
@@ -82,7 +82,7 @@ def load_audio_mono_16k(path: Path) -> np.ndarray:
         minutes = MAX_AUDIO_SECONDS / 60
         raise AudioError(
             f"This file is too long ({duration / 60:.1f} min). "
-            f"The maximum supported length is {minutes:.0f} minutes."
+            f"The maximum supported length is {minutes:.1f} minutes."
         )
 
     if not np.isfinite(audio).all():
