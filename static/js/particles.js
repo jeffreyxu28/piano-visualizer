@@ -41,13 +41,16 @@ export function getImpactParticles(midi, startSec, keyCenterX, keyTopY, age) {
     const rand = mulberry32(hashSeed(midi, startSec, i));
     const lifetime = 0.32 + rand() * 0.4;
     const delay = rand() * 0.035;
+
+    // Bail before the trig/remaining-rand() work below - most calls to
+    // this function are for particles outside their own lifetime window.
+    const localAge = age - delay;
+    if (localAge < 0 || localAge > lifetime) continue;
+
     const angle = -Math.PI / 2 + (rand() - 0.5) * Math.PI * 1.1;
     const speed = 45 + rand() * 125;
     const flickerPhase = rand() * Math.PI * 2;
     const sizeSeed = rand();
-
-    const localAge = age - delay;
-    if (localAge < 0 || localAge > lifetime) continue;
 
     const vx = Math.cos(angle) * speed;
     const vy = Math.sin(angle) * speed;

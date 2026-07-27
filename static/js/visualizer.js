@@ -12,7 +12,7 @@ import {
   getImpactGlow,
   getImpactShockwave,
   getImpactFlash,
-} from "./particles.js?v=2";
+} from "./particles.js?v=3";
 
 const TOP_MARGIN = 18;
 const MIN_KEYBOARD_HEIGHT = 108;
@@ -20,6 +20,7 @@ const MAX_KEYBOARD_HEIGHT = 168;
 const PAST_NOTE_BUFFER = 0.16; // keep drawing briefly after a note ends for the release fade
 const KEY_ATTACK_SEC = 0.045; // quick ramp-in when a note starts
 const KEY_DECAY_SEC = 0.16; // gentle fade-out after a note ends, like damper decay
+const IMPACT_EFFECT_WINDOW = 0.8; // longest-lived impact effect (embers) finishes by this age
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -394,10 +395,18 @@ export class Visualizer {
 
   _drawImpactEffects(ctx, visibleNotes, currentTime) {
     for (const note of visibleNotes) {
+      const age = currentTime - note.start_sec;
+      // Impact effects only matter for a brief window right after a note
+      // lands (flash/shockwave/glow/embers all finish well under 1s).
+      // visibleNotes can include dozens of notes across the whole lookahead
+      // window, so skipping the (relatively expensive) effect functions
+      // entirely for notes that aren't freshly-onset is what keeps this
+      // cheap on dense songs - this was the actual source of the lag.
+      if (age < -0.02 || age > IMPACT_EFFECT_WINDOW) continue;
+
       const pos = this.layout.positions.get(note.midi_note);
       if (!pos) continue;
 
-      const age = currentTime - note.start_sec;
       const hue = this.options.colorByPitch ? pitchHue(note.midi_note) : this.options.customColorHue;
 
       // Soft ambient bloom - the slowest-fading, widest-reaching layer.

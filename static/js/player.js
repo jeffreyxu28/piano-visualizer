@@ -5,6 +5,15 @@
 // that instant - there is no separate incrementing timer, so pausing,
 // seeking, restarting, and playback-rate changes all stay correct without
 // any special-case handling.
+//
+// One deliberate, narrowly-scoped exception: once the audio genuinely
+// finishes, there's nothing left to stay in sync with, so a short
+// wall-clock "grace period" lets the last note's key-glow/ember decay
+// finish playing out instead of freezing the instant the source file
+// ends (which, for a recording with little trailing silence, could cut
+// the decay off mid-fade).
+
+const END_GRACE_SECONDS = 1.5;
 
 export class Player {
   constructor(audioEl, visualizer, callbacks = {}) {
@@ -23,10 +32,17 @@ export class Player {
     this._audioContext = null;
     this._gainNode = null;
     this._pendingVolume = 1.0;
+    this._endedAt = null; // performance.now() timestamp when 'ended' fired, or null
 
-    this.audio.addEventListener("play", () => this.callbacks.onPlayStateChange?.(true));
+    this.audio.addEventListener("play", () => {
+      this._endedAt = null;
+      this.callbacks.onPlayStateChange?.(true);
+    });
     this.audio.addEventListener("pause", () => this.callbacks.onPlayStateChange?.(false));
-    this.audio.addEventListener("ended", () => this.callbacks.onPlayStateChange?.(false));
+    this.audio.addEventListener("ended", () => {
+      this._endedAt = performance.now();
+      this.callbacks.onPlayStateChange?.(false);
+    });
     this.audio.addEventListener("loadedmetadata", () => {
       this.callbacks.onDurationChange?.(this.audio.duration || 0);
     });
@@ -47,12 +63,22 @@ export class Player {
   }
 
   _tick() {
-    const currentTime = this.audio.currentTime || 0;
-    this.visualizer.render(currentTime);
+    const realTime = this.audio.currentTime || 0;
+    this.visualizer.render(this._effectiveCurrentTime(realTime));
 
     if (!this.isSeeking) {
-      this.callbacks.onTick?.(currentTime, this.audio.duration || 0);
+      this.callbacks.onTick?.(realTime, this.audio.duration || 0);
     }
+  }
+
+  // While actively playing/seeking this is just audio.currentTime. Only
+  // once the audio has truly ended does it coast a little further (wall
+  // clock, capped at END_GRACE_SECONDS) so final decay effects can finish.
+  _effectiveCurrentTime(realTime) {
+    if (this._endedAt === null) return realTime;
+    const graceElapsed = (performance.now() - this._endedAt) / 1000;
+    if (graceElapsed >= END_GRACE_SECONDS) return realTime;
+    return realTime + graceElapsed;
   }
 
   load(url) {
@@ -115,10 +141,12 @@ export class Player {
   }
 
   restart() {
+    this._endedAt = null;
     this.audio.currentTime = 0;
   }
 
   seekTo(seconds) {
+    this._endedAt = null;
     const duration = this.audio.duration || 0;
     this.audio.currentTime = Math.min(Math.max(0, seconds), duration);
   }
