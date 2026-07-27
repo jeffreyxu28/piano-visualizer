@@ -7,6 +7,7 @@ the model - it is inference only.
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -53,6 +54,14 @@ def get_model() -> tuple[PianoTranscriptionModel, torch.device]:
             )
 
         device = get_device()
+        # On a resource-constrained host (e.g. a free hosting tier with a
+        # fractional CPU share), PyTorch's default multi-threaded intra-op
+        # parallelism buys little and adds per-thread memory overhead.
+        # Opt-in only (via env var) so normal local runs on a real desktop
+        # keep using all available cores.
+        torch_threads = os.environ.get("TORCH_NUM_THREADS")
+        if torch_threads:
+            torch.set_num_threads(max(1, int(torch_threads)))
         try:
             model = PianoTranscriptionModel().to(device)
             checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)

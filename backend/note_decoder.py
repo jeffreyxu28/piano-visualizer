@@ -9,6 +9,8 @@ into (pitch, start, end) note events.
 from __future__ import annotations
 
 import csv
+import gc
+import os
 from pathlib import Path
 
 import numpy as np
@@ -57,6 +59,17 @@ def predict_probabilities(
     frame_sum = np.zeros((total_frames, N_KEYS), dtype=np.float32)
     counts = np.zeros((total_frames, 1), dtype=np.float32)
 
+    # On a memory-constrained host, PyTorch's CPU allocator can retain
+    # freed tensor memory in its own internal pool rather than returning it
+    # to the OS between forward passes. That's invisible for a short clip
+    # (a handful of windows) but on a long recording (dozens of windows in
+    # one request) the retained-but-idle pool can grow enough to matter.
+    # Dropping references and forcing a collection periodically keeps that
+    # bounded instead of climbing for the whole request. Opt-in via env var
+    # so normal local runs (with headroom to spare) skip the overhead.
+    gc_interval = int(os.environ.get("INFERENCE_GC_INTERVAL", "0"))
+    window_index = 0
+
     for start in range(0, total_frames, stride):
         end = min(total_frames, start + window_frames)
         needed_frames = end - start
@@ -80,6 +93,13 @@ def predict_probabilities(
         onset_sum[start:actual_end] += onset_probability
         frame_sum[start:actual_end] += frame_probability
         counts[start:actual_end] += 1.0
+
+        del chunk_waveform, chunk_mel, chunk_tensor
+        del onset_logits, frame_logits, onset_probability, frame_probability
+
+        window_index += 1
+        if gc_interval and window_index % gc_interval == 0:
+            gc.collect()
 
         if end >= total_frames:
             break
