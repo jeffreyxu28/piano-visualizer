@@ -12,7 +12,5 @@ services:
         value: "420"
       - key: MAX_UPLOAD_BYTES
         value: "56000000"
-      - key: TORCH_NUM_THREADS
-        value: "1"
       - key: INFERENCE_GC_INTERVAL
         value: "3"
