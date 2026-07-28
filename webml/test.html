@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>webml validation harness</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js"></script>
+</head>
+<body>
+<pre id="out">running...</pre>
+<script type="module">
+import { loadMelFilterbank } from "./mel-spectrogram.js";
+import { predictProbabilities } from "./onnx-inference.js";
+import { decodeNotes } from "./note-decoder.js";
+import { noteName } from "../static/js/piano-layout.js";
+
+const out = document.getElementById("out");
+function log(...args) {
+  out.textContent += args.map(String).join(" ") + "\n";
+  console.log(...args);
+}
+
+async function main() {
+  log("Loading ONNX Runtime session...");
+  const session = await window.ort.InferenceSession.create("/docs/piano_model.onnx", {
+    executionProviders: ["wasm"],
+  });
+  log("Session ready.");
+
+  const filterbank = await loadMelFilterbank("/docs/mel_filterbank.bin");
+  log("Filterbank loaded:", filterbank.length);
+
+  const waveform = new Float32Array(await fetch("/webml/test_waveform.bin").then((r) => r.arrayBuffer()));
+  log("Waveform loaded:", waveform.length, "samples");
+
+  const t0 = performance.now();
+  const { onsetProbability, frameProbability, numFrames } = await predictProbabilities(
+    session,
+    waveform,
+    filterbank,
+    (frac) => log("progress:", (frac * 100).toFixed(0) + "%")
+  );
+  const t1 = performance.now();
+  log(`Inference done in ${(t1 - t0).toFixed(0)}ms, numFrames=${numFrames}`);
+
+  const notes = decodeNotes(onsetProbability, frameProbability, numFrames, noteName);
+  log(`Decoded ${notes.length} notes (JS/ONNX pipeline)`);
+
+  const reference = await fetch("/webml/test_reference_notes.json").then((r) => r.json());
+  log(`Reference: ${reference.length} notes (Python/PyTorch pipeline)`);
+
+  // Compare note-by-note (same sort order expected since both sort by start_sec)
+  let mismatches = 0;
+  const n = Math.min(notes.length, reference.length);
+  let maxStartDiff = 0, maxEndDiff = 0;
+  for (let i = 0; i < n; i++) {
+    const a = notes[i];
+    const b = reference[i];
+    if (a.midi_note !== b.midi_note) mismatches++;
+    maxStartDiff = Math.max(maxStartDiff, Math.abs(a.start_sec - b.start_sec));
+    maxEndDiff = Math.max(maxEndDiff, Math.abs(a.end_sec - b.end_sec));
+  }
+
+  log(`\n=== COMPARISON ===`);
+  log(`JS note count: ${notes.length}, Python note count: ${reference.length}`);
+  log(`Pitch mismatches (same index): ${mismatches} / ${n}`);
+  log(`Max start_sec diff: ${maxStartDiff.toFixed(4)}s`);
+  log(`Max end_sec diff: ${maxEndDiff.toFixed(4)}s`);
+  log(`\nFirst 8 JS notes:`);
+  notes.slice(0, 8).forEach((n) => log(JSON.stringify(n)));
+  log(`\nFirst 8 reference notes:`);
+  reference.slice(0, 8).forEach((n) => log(JSON.stringify(n)));
+
+  window.__testResult = { notes, reference, mismatches, maxStartDiff, maxEndDiff };
+}
+
+main().catch((err) => {
+  log("ERROR:", err.message, err.stack);
+});
+</script>
+</body>
+</html>
